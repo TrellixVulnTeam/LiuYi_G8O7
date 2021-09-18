@@ -1,11 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time    : 2021/8/30 10:06
-# @Author  : jiaguoqing 
-# @Email   : jiaguoqing12138@gmail.com
-# @File    : modeling.py
 
-"""PyTorch BERT model."""
+""" PyTorch BERT model. """
 
 from __future__ import absolute_import
 from __future__ import division
@@ -13,7 +9,6 @@ from __future__ import print_function
 
 import os
 import copy
-import json
 import math
 import logging
 import tarfile
@@ -26,9 +21,6 @@ from torch import nn
 from torch.nn import CrossEntropyLoss, MSELoss
 import torch.nn.functional as F
 
-from .file_utils import cached_path
-from .loss import LabelSmoothingLoss
-
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +29,15 @@ PRETRAINED_MODEL_ARCHIVE_MAP = {
     'bert-large-uncased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-uncased.tar.gz",
     'bert-base-cased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-cased.tar.gz",
     'bert-large-cased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-cased.tar.gz",
-    'bert-base-multilingual-uncased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-multilingual"
-                                      "-uncased.tar.gz",
-    'bert-base-multilingual-cased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-multilingual-cased"
-                                    ".tar.gz",
+    'bert-base-multilingual-uncased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-multilingual-uncased.tar.gz",
+    'bert-base-multilingual-cased': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-multilingual-cased.tar.gz",
     'bert-base-chinese': "https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-chinese.tar.gz",
 }
 CONFIG_NAME = 'bert_config.json'
 WEIGHTS_NAME = 'pytorch_model.bin'
 
 
+# activate function
 def gelu(x):
     """Implementation of the gelu activation function.
         For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
@@ -82,15 +73,12 @@ class PositionalEmbedding(nn.Module):
 
 
 class BertEmbeddings(nn.Module):
-    """Construct the embeddings from word, position and token_type embeddings.
-    """
+    """ Construct the embeddings from word, position and token_type embeddings. """
 
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
-        self.word_embeddings = nn.Embedding(
-            config.vocab_size, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(
-            config.type_vocab_size, config.hidden_size)
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
         if hasattr(config, 'fp32_embedding'):
             self.fp32_embedding = config.fp32_embedding
         else:
@@ -143,8 +131,7 @@ class BertSelfAttention(nn.Module):
                 "The hidden size (%d) is not a multiple of the number of attention "
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads))
         self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = int(
-            config.hidden_size / config.num_attention_heads)
+        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
         if hasattr(config, 'num_qkv') and (config.num_qkv > 1):
@@ -152,33 +139,25 @@ class BertSelfAttention(nn.Module):
         else:
             self.num_qkv = 1
 
-        self.query = nn.Linear(
-            config.hidden_size, self.all_head_size*self.num_qkv)
-        self.key = nn.Linear(config.hidden_size,
-                             self.all_head_size*self.num_qkv)
-        self.value = nn.Linear(
-            config.hidden_size, self.all_head_size*self.num_qkv)
+        self.query = nn.Linear(config.hidden_size, self.all_head_size * self.num_qkv)
+        self.key = nn.Linear(config.hidden_size, self.all_head_size * self.num_qkv)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size * self.num_qkv)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        self.uni_debug_flag = True if os.getenv(
-            'UNI_DEBUG_FLAG', '') else False
+        self.uni_debug_flag = True if os.getenv('UNI_DEBUG_FLAG', '') else False
         if self.uni_debug_flag:
-            self.register_buffer('debug_attention_probs',
-                                 torch.zeros((512, 512)))
+            self.register_buffer('debug_attention_probs', torch.zeros((512, 512)))
         if hasattr(config, 'seg_emb') and config.seg_emb:
-            self.b_q_s = nn.Parameter(torch.zeros(
-                1, self.num_attention_heads, 1, self.attention_head_size))
-            self.seg_emb = nn.Embedding(
-                config.type_vocab_size, self.all_head_size)
+            self.b_q_s = nn.Parameter(torch.zeros(1, self.num_attention_heads, 1, self.attention_head_size))
+            self.seg_emb = nn.Embedding(config.type_vocab_size, self.all_head_size)
         else:
             self.b_q_s = None
             self.seg_emb = None
 
     def transpose_for_scores(self, x, mask_qkv=None):
         if self.num_qkv > 1:
-            sz = x.size()[:-1] + (self.num_qkv,
-                                  self.num_attention_heads, self.all_head_size)
+            sz = x.size()[:-1] + (self.num_qkv, self.num_attention_heads, self.all_head_size)
             # (batch, pos, num_qkv, head, head_hid)
             x = x.view(*sz)
             if mask_qkv is None:
@@ -193,8 +172,7 @@ class BertSelfAttention(nn.Module):
                 x = x.gather(2, mask_qkv.view(sz[0], sz[1], 1, 1, 1).expand(
                     sz[0], sz[1], 1, sz[3], sz[4])).squeeze(2)
         else:
-            sz = x.size()[:-1] + (self.num_attention_heads,
-                                  self.attention_head_size)
+            sz = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
             # (batch, pos, head, head_hid)
             x = x.view(*sz)
         # (batch, head, pos, head_hid)
@@ -223,10 +201,8 @@ class BertSelfAttention(nn.Module):
         if self.seg_emb is not None:
             seg_rep = self.seg_emb(seg_ids)
             # (batch, pos, head, head_hid)
-            seg_rep = seg_rep.view(seg_rep.size(0), seg_rep.size(
-                1), self.num_attention_heads, self.attention_head_size)
-            qs = torch.einsum('bnih,bjnh->bnij',
-                              query_layer+self.b_q_s, seg_rep)
+            seg_rep = seg_rep.view(seg_rep.size(0), seg_rep.size(1), self.num_attention_heads, self.attention_head_size)
+            qs = torch.einsum('bnih,bjnh->bnij', query_layer+self.b_q_s, seg_rep)
             attention_scores = attention_scores + qs
 
         # attention_scores = attention_scores / math.sqrt(self.attention_head_size)
@@ -239,8 +215,7 @@ class BertSelfAttention(nn.Module):
 
         if self.uni_debug_flag:
             _pos = attention_probs.size(-1)
-            self.debug_attention_probs[:_pos, :_pos].copy_(
-                attention_probs[0].mean(0).view(_pos, _pos))
+            self.debug_attention_probs[:_pos, :_pos].copy_(attention_probs[0].mean(0).view(_pos, _pos))
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
@@ -248,8 +223,7 @@ class BertSelfAttention(nn.Module):
 
         context_layer = torch.matmul(attention_probs, value_layer)
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-        new_context_layer_shape = context_layer.size()[
-            :-2] + (self.all_head_size,)
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
         return context_layer
 
